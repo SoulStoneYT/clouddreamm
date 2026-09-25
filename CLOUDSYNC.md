@@ -1,15 +1,16 @@
 # CLOUDSYNC.md — CloudDream Cloud Synchronization
 
-Status: **Stage 1 — Firebase foundation and configuration only.**
+Status: **Phase 2A — Firebase foundation, configuration, and the authentication
+service layer. No account UI yet.**
 
-This document describes only what is implemented today. Authentication,
-Firestore synchronization, bookmarks/progress/history sync, and device
-management are **not implemented yet** and are intentionally not documented
-here as if they existed.
+This document describes only what is implemented today. The sign-in and
+registration **screens** do not exist yet, and Firestore synchronization,
+bookmarks/progress/history sync, and device management are **not implemented
+yet** and are intentionally not documented here as if they existed.
 
 ---
 
-## 1. What Stage 1 provides
+## 1. What is implemented today
 
 - Firebase BoM and `firebase-auth` (BoM-managed) added to the `app` module.
   `firebase-firestore` is intentionally **not** added at this stage; see section 7.
@@ -19,10 +20,31 @@ here as if they existed.
   through `CloudDream.init(context)` in `CloudStreamApp.onCreate()`.
 - A small logging helper (`CloudDreamLog`, logcat tag `CloudSync`) that only
   logs in debug builds.
+- **Phase 2A:** a coroutine-friendly authentication service
+  (`CloudDreamAuth`) that exposes the current user, sign-in with
+  email/password, account creation, sign-out, a session listener, and a small
+  error mapping. It is opt-in and never called during startup.
 
-That is all. No Firebase Auth calls, no Firestore reads/writes, no sync
-engine, no Settings UI, and no changes to CloudStream storage, bookmarks,
-player, or extensions.
+That is all. There are no Firestore reads/writes, no sync engine, no account
+UI, and no changes to CloudStream storage, bookmarks, player, or extensions.
+CloudStream stays fully usable with no account and when Firebase is
+unconfigured.
+
+### Using the authentication service
+
+```kotlin
+when (val result = CloudDreamAuth.signInWithEmailAndPassword(email, password)) {
+    is CloudDreamAuthResult.Success -> { /* result.user is signed in */ }
+    is CloudDreamAuthResult.Failure -> { /* map result.error to a message */ }
+}
+```
+
+`CloudDreamAuth.isAvailable` is false when Firebase is not configured, and every
+call then returns `Failure(NOT_CONFIGURED)` instead of throwing. Passwords are
+passed straight to Firebase and are never stored, cached or logged by
+CloudDream. Email/password sign-in must be enabled in the Firebase console
+(Authentication → Sign-in method); until then Firebase answers
+`OPERATION_NOT_ALLOWED`.
 
 ---
 
@@ -97,7 +119,7 @@ a Console-side setup task; Stage 1 does not automate it.
 
 ---
 
-## 4. Files involved (Stage 1)
+## 4. Files involved
 
 | File | Role |
 |---|---|
@@ -106,11 +128,14 @@ a Console-side setup task; Stage 1 does not automate it.
 | `app/src/main/java/com/lagradost/clouddream/CloudDreamConfig.kt` | Exposes configuration; `isConfigured` |
 | `app/src/main/java/com/lagradost/clouddream/CloudDream.kt` | Programmatic, crash-safe `FirebaseApp` init |
 | `app/src/main/java/com/lagradost/clouddream/CloudDreamLog.kt` | Debug-only logging (tag `CloudSync`) |
+| `app/src/main/java/com/lagradost/clouddream/auth/CloudDreamAuth.kt` | Auth service: current user, sign in, create account, sign out, session listener |
+| `app/src/main/java/com/lagradost/clouddream/auth/CloudDreamAuthError.kt` | Lightweight mapping of Firebase Auth failures |
+| `app/src/main/java/com/lagradost/clouddream/auth/CloudDreamUser.kt` | In-memory user snapshot (no tokens, nothing persisted) |
 | `app/src/main/java/com/lagradost/cloudstream3/CloudStreamApp.kt` | One guarded `CloudDream.init(this)` call |
 
 ---
 
-## 5. Verify Stage 1
+## 5. Verify the build
 
 - Build with **no** CloudDream Firebase configuration present:
 
@@ -134,15 +159,18 @@ from `CloudSync` stating that Firebase configuration is absent.
   (build-time injection) or in the Firebase Console.
 - Stage 1 introduces no Firestore data and therefore no security rules yet;
   Firestore security rules will be added together with the sync stages.
+- CloudDream never stores a password, an ID token or a refresh token locally.
+  The session lives in the Firebase SDK's own storage; `CloudDreamUser` is a
+  read-only in-memory snapshot.
 
 ---
 
 ## 7. Planned later stages (not implemented)
 
-Firebase Authentication (email/password), Firestore data model and security
-rules, the sync engine, conflict resolution, offline queueing, device
-registration, and the Settings account UI are all future stages. This file
-will be extended as each stage lands.
+The sign-in and registration **UI**, Firestore data model and security rules,
+the sync engine, conflict resolution, offline queueing, and device
+registration are all future stages. This file will be extended as each stage
+lands.
 
 ### Adding `firebase-firestore` later — known dependency conflict
 
