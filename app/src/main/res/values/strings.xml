@@ -378,6 +378,39 @@
     <string name="clouddream_account_not_signed_in">Not signed in</string>
     <string name="clouddream_account_status">Status</string>
     <string name="clouddream_account_unavailable">Cloud features are not available in this build</string>
+    <!-- CloudDream: sign-in form -->
+    <string name="clouddream_email">Email</string>
+    <string name="clouddream_password">Password</string>
+    <string name="clouddream_sign_in">Sign In</string>
+    <string name="clouddream_create_account">Create Account</string>
+    <string name="clouddream_sign_out">Sign Out</string>
+    <string name="clouddream_signing_in">Signing in…</string>
+    <string name="clouddream_creating_account">Creating account…</string>
+    <string name="clouddream_signing_out">Signing out…</string>
+    <string name="clouddream_show_password">Show password</string>
+    <string name="clouddream_hide_password">Hide password</string>
+    <!-- CloudDream: locally validated input errors -->
+    <string name="clouddream_error_email_required">Enter your email address</string>
+    <string name="clouddream_error_email_invalid">That email address does not look right</string>
+    <string name="clouddream_error_password_required">Enter your password</string>
+    <string name="clouddream_error_password_too_short">Password must be at least 6 characters</string>
+    <!-- CloudDream: mapped CloudDreamAuthError messages -->
+    <string name="clouddream_error_invalid_input">Enter your email address and password</string>
+    <string name="clouddream_error_service_unavailable">The cloud service is temporarily unavailable</string>
+    <string name="clouddream_error_invalid_password">That password is not valid</string>
+    <string name="clouddream_error_invalid_credentials">Incorrect email or password</string>
+    <string name="clouddream_error_email_in_use">An account already exists for that email</string>
+    <string name="clouddream_error_weak_password">Choose a stronger password</string>
+    <string name="clouddream_error_operation_not_allowed">Email and password sign-in is disabled for this project</string>
+    <string name="clouddream_error_user_disabled">This account has been disabled</string>
+    <string name="clouddream_error_email_not_verified">This email address has not been verified yet</string>
+    <string name="clouddream_error_user_not_found">No account was found for that email</string>
+    <string name="clouddream_error_too_many_requests">Too many attempts, please try again later</string>
+    <string name="clouddream_error_network">No network connection</string>
+    <string name="clouddream_error_timeout">The request timed out</string>
+    <string name="clouddream_error_sign_in_again">Please sign in again</string>
+    <string name="clouddream_error_quota_exceeded">Too many attempts, please try again later</string>
+    <string name="clouddream_error_unknown">Something went wrong, please try again</string>
     <!-- End CloudDream -->
     <string name="pref_category_player_features">Player features</string>
     <string name="pref_category_subtitles">Subtitles</string>

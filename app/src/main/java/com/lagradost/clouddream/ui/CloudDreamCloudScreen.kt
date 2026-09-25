@@ -1,29 +1,41 @@
 package com.lagradost.clouddream.ui
 
+import android.widget.Toast
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.State
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import com.lagradost.clouddream.auth.CloudDreamAuth
+import com.lagradost.clouddream.auth.CloudDreamAuthResult
 import com.lagradost.clouddream.auth.CloudDreamUser
+import com.lagradost.clouddream.auth.toMessageRes
+import com.lagradost.cloudstream3.CommonActivity.showToast
 import com.lagradost.cloudstream3.R
 import com.mihon.presentation.settings.Preference
 import com.mihon.presentation.settings.SearchableSettings
 import kotlinx.collections.immutable.persistentListOf
+import kotlinx.coroutines.launch
 
 /**
- * Phase 2B: the Cloud section of the settings hub.
+ * Phase 2B: the Cloud section of the settings hub, and CloudDream's account entry point.
  *
- * Deliberately read-only for now. It renders the current CloudDream session state and
- * nothing else — there is no sign-in form, no sign-out button and no credential input
- * yet. Those come in later steps, once this screen is proven to build and display.
+ * Three mutually exclusive states, all driven by the session reported by
+ * [CloudDreamAuth.addUserStateListener]:
  *
- * It is safe in every configuration: when Firebase was never configured the status row
- * says so instead of throwing, which matches the "Firebase is optional" rule documented
- * in CLOUDSYNC.md.
+ * 1. **Unavailable** — Firebase was never configured for this build, so the screen says so
+ *    and offers nothing. CloudStream stays fully usable.
+ * 2. **Signed out** — the credential form (email, password, sign in, create account).
+ * 3. **Signed in** — the account's email plus a sign-out action.
+ *
+ * There is no Firebase type in this file: every call goes through [CloudDreamAuth], and
+ * nothing is persisted, logged or cached here. Signing in is opt-in and never happens at
+ * startup, so the app is never gated on an account.
  */
 object CloudDreamCloudScreen : SearchableSettings {
 
@@ -32,29 +44,107 @@ object CloudDreamCloudScreen : SearchableSettings {
 
     @Composable
     override fun getPreferences(): List<Preference> {
-        val available = CloudDreamAuth.isAvailable
+        val scope = rememberCoroutineScope()
+
         // Bound to a local val so the null check below smart-casts.
         val user = rememberCloudDreamUser().value
+        val available = CloudDreamAuth.isAvailable
+        val groupTitle = stringResource(R.string.pref_category_clouddream_account)
 
-        val status = when {
-            !available -> stringResource(R.string.clouddream_account_unavailable)
-            user == null -> stringResource(R.string.clouddream_account_not_signed_in)
-            // Fall back to the uid so a user is always identifiable, even without an email.
-            else -> user.email ?: user.uid
+        // Declared before any early return so the remember slots never move.
+        var pending by remember { mutableStateOf<CloudDreamAuthAction?>(null) }
+        var errorRes by remember { mutableStateOf<Int?>(null) }
+
+        if (!available) {
+            return persistentListOf(
+                Preference.PreferenceGroup(
+                    title = groupTitle,
+                    preferenceItems = persistentListOf(
+                        Preference.PreferenceItem.TextPreference(
+                            title = stringResource(R.string.clouddream_account_status),
+                            subtitle = stringResource(R.string.clouddream_account_unavailable),
+                            icon = painterResource(R.drawable.ic_outline_account_circle_24),
+                        )
+                    ),
+                )
+            )
         }
 
-        return persistentListOf(
-            Preference.PreferenceGroup(
-                title = stringResource(R.string.pref_category_clouddream_account),
-                preferenceItems = persistentListOf(
-                    Preference.PreferenceItem.TextPreference(
-                        title = stringResource(R.string.clouddream_account_status),
-                        subtitle = status,
-                        icon = painterResource(R.drawable.ic_outline_account_circle_24),
-                    )
-                ),
-            )
+        val statusRow = Preference.PreferenceItem.TextPreference(
+            title = stringResource(
+                if (user == null) R.string.clouddream_account_status
+                else R.string.clouddream_account_signed_in_as
+            ),
+            // Fall back to the uid so the account is always identifiable, even if it
+            // somehow has no email.
+            subtitle = user?.email ?: user?.uid
+                ?: stringResource(R.string.clouddream_account_not_signed_in),
+            icon = painterResource(R.drawable.ic_outline_account_circle_24),
         )
+
+        return when {
+            user == null -> persistentListOf(
+                Preference.PreferenceGroup(
+                    title = groupTitle,
+                    preferenceItems = persistentListOf(
+                        statusRow,
+                        Preference.PreferenceItem.CustomPreference(
+                            title = groupTitle,
+                            content = {
+                                CloudDreamSignInForm(
+                                    pending = pending,
+                                    pendingError = errorRes,
+                                    onPendingChange = { pending = it },
+                                    onError = { errorRes = it },
+                                )
+                            },
+                        ),
+                    ),
+                )
+            )
+
+            else -> persistentListOf(
+                Preference.PreferenceGroup(
+                    title = groupTitle,
+                    preferenceItems = persistentListOf(
+                        statusRow,
+                        Preference.PreferenceItem.TextPreference(
+                            title = stringResource(
+                                if (pending == CloudDreamAuthAction.SIGN_OUT) {
+                                    R.string.clouddream_signing_out
+                                } else {
+                                    R.string.clouddream_sign_out
+                                }
+                            ),
+                            icon = painterResource(R.drawable.ic_baseline_exit_24),
+                            // A disabled PreferenceItem animates out of the layout
+                            // instead of greying out, so "busy" is expressed by
+                            // dropping onClick rather than by enabled = false.
+                            onClick = if (pending != null) {
+                                null
+                            } else {
+                                {
+                                    pending = CloudDreamAuthAction.SIGN_OUT
+                                    scope.launch {
+                                        val result = CloudDreamAuth.signOut()
+                                        pending = null
+                                        when (result) {
+                                            // The session listener swaps back to the
+                                            // signed-out form on its own.
+                                            is CloudDreamAuthResult.Success -> Unit
+                                            is CloudDreamAuthResult.Failure -> showToast(
+                                                result.error.toMessageRes(),
+                                                Toast.LENGTH_LONG,
+                                            )
+                                        }
+                                    }
+                                }
+                            },
+                        ),
+                    ),
+                )
+            )
+        }
     }
 }
 
@@ -63,7 +153,7 @@ object CloudDreamCloudScreen : SearchableSettings {
  *
  * [CloudDreamAuth.addUserStateListener] fires immediately with the current user, so the
  * initial value is only a placeholder for the unavailable case, where the listener is a
- * no-op and never fires.
+ * no-op and never fires. The listener is always removed on dispose.
  */
 @Composable
 private fun rememberCloudDreamUser(): State<CloudDreamUser?> {

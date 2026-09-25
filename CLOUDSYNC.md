@@ -1,14 +1,13 @@
 # CLOUDSYNC.md — CloudDream Cloud Synchronization
 
-Status: **Phase 2A complete (Firebase foundation, configuration, authentication
-service). Phase 2B started: a read-only Cloud settings section that displays the
-current session. No sign-in form yet.**
+Status: **Phase 2A and Phase 2B complete — Firebase foundation, configuration,
+authentication service, and a working account UI (sign in, create account, sign
+out) in the settings hub. Cloud sync itself is still not implemented.**
 
-This document describes only what is implemented today. The Cloud settings screen
-exists but is **read-only** — it has no sign-in form, no sign-out button and no
-credential input. Firestore synchronization, bookmarks/progress/history sync, and
-device management are **not implemented yet** and are intentionally not documented
-here as if they existed.
+This document describes only what is implemented today. The account UI exists
+and works, but it only establishes an identity: Firestore synchronization,
+bookmarks/progress/history sync, and device management are **not implemented
+yet** and are intentionally not documented here as if they existed.
 
 ---
 
@@ -27,10 +26,11 @@ here as if they existed.
   email/password, account creation, sign-out, a session listener, and a small
   error mapping. It is opt-in and never called during startup.
 - **Phase 2B:** a new top-level **Cloud** section in the settings hub, backed by
-  `CloudDreamCloudScreen`. It is **read-only**: it shows the current session
-  (signed-in email, "Not signed in", or "not available in this build") and
-  observes the session through `CloudDreamAuth.addUserStateListener`. No
-  credential is ever typed into the app yet.
+  `CloudDreamCloudScreen`, that is the complete account entry point: a status
+  row plus a signed-out credential form (email, password, show/hide toggle,
+  **Sign In**, **Create Account**) and a signed-in state with **Sign Out**. The
+  session is observed through `CloudDreamAuth.addUserStateListener`, so the UI
+  follows the session automatically instead of polling.
 
 That is all. There are no Firestore reads/writes, no sync engine, and no changes
 to CloudStream storage, bookmarks, player, or extensions. CloudStream stays fully
@@ -38,16 +38,36 @@ usable with no account and when Firebase is unconfigured.
 
 ### The Cloud settings section
 
-Settings → **Cloud** shows one row, "Status", whose subtitle is one of:
+Settings → **Cloud** has three mutually exclusive states.
 
-| State | Shown as |
-|---|---|
-| Firebase not configured for this build | Cloud features are not available in this build |
-| Configured, signed out | Not signed in |
-| Configured, signed in | the account's email, or its uid if it has none |
+**Firebase not configured** — a single read-only row reading "Cloud features are
+not available in this build". Nothing is clickable and nothing throws.
 
-The row is intentionally not clickable. Signing in, registering and signing out
-are the next steps and are **not implemented yet**.
+**Signed out** — a status row ("Not signed in") above a form containing an email
+field, a password field with a visibility toggle, a **Sign In** button and a
+**Create Account** button.
+
+**Signed in** — a status row showing the account's email (or its uid if it has
+none) and a **Sign Out** row.
+
+While a Firebase Auth call is in flight, a progress bar appears, both buttons and
+both fields are disabled, and the primary button's label changes to
+"Signing in…", "Creating account…" or "Signing out…" so it is clear which
+operation is running. Obvious input mistakes (blank email, an email with no
+`@` or no dotted domain, blank password, a password under Firebase's 6-character
+minimum when creating an account) are rejected locally so they never cost a
+network round trip; Firebase remains the authority for everything else.
+
+Failures are shown inline under the form, and sign-out failures are shown as a
+toast, both mapped to localized strings by `CloudDreamAuthError.toMessageRes()`.
+The `message` field on `CloudDreamAuthError` is deliberately *not* shown to the
+user; it is a developer/log-facing description.
+
+**Credential handling.** The password is held in a plain `remember`, never
+`rememberSaveable`, so it is never written into a saved-instance-state bundle. It
+is cleared as soon as an operation succeeds and again when the form leaves
+composition. CloudDream stores no credential of its own, logs nothing containing
+a credential, and there is no local token cache.
 
 This section is deliberately separate from CloudStream's own "Accounts and
 Security" section, which is about third-party sync providers (MyAnimeList,
@@ -156,7 +176,9 @@ a Console-side setup task; Stage 1 does not automate it.
 | `app/src/main/java/com/lagradost/clouddream/auth/CloudDreamAuthError.kt` | Lightweight mapping of Firebase Auth failures |
 | `app/src/main/java/com/lagradost/clouddream/auth/CloudDreamUser.kt` | In-memory user snapshot (no tokens, nothing persisted) |
 | `app/src/main/java/com/lagradost/cloudstream3/CloudStreamApp.kt` | One guarded `CloudDream.init(this)` call |
-| `app/src/main/java/com/lagradost/clouddream/ui/CloudDreamCloudScreen.kt` | Phase 2B: the read-only Cloud settings screen (Compose `SearchableSettings`) |
+| `app/src/main/java/com/lagradost/clouddream/ui/CloudDreamCloudScreen.kt` | Phase 2B: the Cloud settings screen — unavailable / signed-out / signed-in states |
+| `app/src/main/java/com/lagradost/clouddream/ui/CloudDreamSignInForm.kt` | The credential form: email, password, visibility toggle, buttons, progress, inline error |
+| `app/src/main/java/com/lagradost/clouddream/auth/CloudDreamAuthErrorMessages.kt` | `CloudDreamAuthError` → localized string resource |
 | `app/src/main/java/com/lagradost/clouddream/ui/CloudDreamCloudSettingsFragment.kt` | Glue binding the navigation destination to `CloudDreamCloudScreen` |
 | `app/src/main/res/navigation/mobile_navigation.xml` | `navigation_settings_cloud` destination + its global action |
 | `app/src/main/java/com/lagradost/cloudstream3/ui/settings/SettingsFragmentScreen.kt` | The "Cloud" hub tile (the only settings file CloudDream edits) |
@@ -186,9 +208,15 @@ from `CloudSync` stating that Firebase configuration is absent.
   succeeds and debug logcat shows `CloudSync: Firebase initialized`.
 
 - On device, open Settings and confirm a **Cloud** tile exists at the bottom of
-  the hub, after **Extensions**. Tapping it opens a "CloudDream account" group
-  with a single "Status" row. Without configuration it must read "Cloud features
-  are not available in this build" and must not crash.
+  the hub, after **Extensions**. Tapping it opens a "CloudDream account" group.
+  Without configuration it must read "Cloud features are not available in this
+  build" and must not crash.
+- With configuration present, that screen must show the form when signed out,
+  accept an email and password, show a progress state during the call, and land
+  on the "Signed in as" state with the correct address afterwards. **Sign Out**
+  must return it to the form.
+- Signing in with a wrong password must show a localized message and must not
+  leave the button stuck in its loading state.
 
 ---
 
@@ -208,10 +236,10 @@ from `CloudSync` stating that Firebase configuration is absent.
 
 ## 7. Planned later stages (not implemented)
 
-The sign-in and registration **form** (email and password fields, submit, error
-surfacing, sign-out), the Firestore data model and security rules, the sync
-engine, conflict resolution, offline queueing, and device registration are all
-future stages. This file will be extended as each stage lands.
+The Firestore data model and security rules, the sync engine, conflict
+resolution, offline queueing, and device registration are all future stages, as
+are email verification, password reset and a "resend verification email" flow.
+This file will be extended as each stage lands.
 
 ### Adding `firebase-firestore` later — known dependency conflict
 
