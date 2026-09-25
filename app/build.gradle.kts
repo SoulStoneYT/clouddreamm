@@ -250,6 +250,31 @@ android {
     namespace = "com.lagradost.cloudstream3"
 }
 
+/**
+ * CloudDream: resolve the protobuf-lite duplicate-class conflict.
+ *
+ * `firebase-firestore` pulls `protolite-well-known-types`, which ships its own copy of
+ * the `com.google.protobuf.DescriptorProtos` schema classes. `protobuf-javalite` started
+ * shipping the same classes in 4.27, and `NewPipeExtractor` (used for trailers) requests
+ * 4.35.0, so Gradle's highest-version-wins rule pulled that in and the build failed in
+ * `check<Variant>DuplicateClasses` with ~100 duplicate `DescriptorProtos*` errors.
+ *
+ * Forcing 3.25.5 resolves it cleanly because that is the exact version protolite itself
+ * declares: the whole Firebase/gRPC graph lines up, and 3.25.5 predates
+ * `DescriptorProtos` while still containing the CVE-2024-7254 fix.
+ *
+ * This is safe for NewPipeExtractor: its bytecode references only 14 core protobuf-lite
+ * classes (MessageLite, CodedInputStream, GeneratedMessageLite, ...) that are
+ * API-identical in 3.25.5, and it references neither `RuntimeVersion` (the 4.27+ gencode
+ * version gate) nor `DescriptorProtos`. Verified by inspecting the artifact; see
+ * CLOUDSYNC.md section 7.
+ */
+configurations.configureEach {
+    resolutionStrategy {
+        force("com.google.protobuf:protobuf-javalite:${libs.versions.protobufJavalite.get()}")
+    }
+}
+
 dependencies {
     // Testing
     testImplementation(libs.junit)
@@ -326,15 +351,14 @@ dependencies {
     implementation(libs.work.runtime.ktx)
     implementation(libs.nicehttp) // HTTP Lib
 
-    // CloudDream (Phase 1) — optional Firebase foundation.
+    // CloudDream — optional Firebase foundation.
     // Configuration is supplied at build time through environment variables or
     // local.properties; no google-services.json and no Google Services Gradle plugin.
-    // Stage 1 ships the BoM and firebase-auth only. firebase-firestore is deliberately
-    // deferred to the Firestore sync stage: it pulls protolite-well-known-types, which
-    // bundles its own copy of the DescriptorProtos schema classes, so it cannot coexist
-    // with protobuf-javalite >= 4.27 (see CLOUDSYNC.md section 7).
+    // firebase-firestore is BoM-managed and is declared without its own version.
+    // See CLOUDSYNC.md section 7 for the protobuf/protolite duplicate-class resolution.
     implementation(platform(libs.firebase.bom))
     implementation(libs.firebase.auth)
+    implementation(libs.firebase.firestore)
 
     implementation(libs.bundles.compose)
     implementation(libs.activity.compose)
