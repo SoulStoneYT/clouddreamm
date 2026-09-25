@@ -69,6 +69,7 @@ import com.lagradost.cloudstream3.utils.GitInfo.currentCommitHash
 import com.lagradost.cloudstream3.utils.UIHelper.clipboardHelper
 import com.lagradost.cloudstream3.utils.UIHelper.navigate
 import com.lagradost.cloudstream3.utils.txt
+import com.lagradost.clouddream.ui.CloudDreamCloudScreen
 import com.lagradost.cloudstream4.compose.Screen
 import com.lagradost.cloudstream4.compose.TV
 import com.lagradost.cloudstream4.compose.circleBorder
@@ -162,6 +163,15 @@ object SettingsFragmentScreen : Screen {
             screen = null,
             icon = R.drawable.extension_24px,
             subtitle = persistentListOf(R.string.add_repository)
+        ),
+        SettingsNavigation(
+            title = R.string.category_cloud,
+            navigation = R.id.action_navigation_global_to_navigation_settings_cloud,
+            screen = CloudDreamCloudScreen,
+            icon = R.drawable.baseline_sync_24,
+            subtitle = persistentListOf(
+                R.string.pref_category_clouddream_account
+            )
         ),
     )
 

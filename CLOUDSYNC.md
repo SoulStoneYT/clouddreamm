@@ -1,12 +1,14 @@
 # CLOUDSYNC.md — CloudDream Cloud Synchronization
 
-Status: **Phase 2A — Firebase foundation, configuration, and the authentication
-service layer. No account UI yet.**
+Status: **Phase 2A complete (Firebase foundation, configuration, authentication
+service). Phase 2B started: a read-only Cloud settings section that displays the
+current session. No sign-in form yet.**
 
-This document describes only what is implemented today. The sign-in and
-registration **screens** do not exist yet, and Firestore synchronization,
-bookmarks/progress/history sync, and device management are **not implemented
-yet** and are intentionally not documented here as if they existed.
+This document describes only what is implemented today. The Cloud settings screen
+exists but is **read-only** — it has no sign-in form, no sign-out button and no
+credential input. Firestore synchronization, bookmarks/progress/history sync, and
+device management are **not implemented yet** and are intentionally not documented
+here as if they existed.
 
 ---
 
@@ -24,11 +26,33 @@ yet** and are intentionally not documented here as if they existed.
   (`CloudDreamAuth`) that exposes the current user, sign-in with
   email/password, account creation, sign-out, a session listener, and a small
   error mapping. It is opt-in and never called during startup.
+- **Phase 2B:** a new top-level **Cloud** section in the settings hub, backed by
+  `CloudDreamCloudScreen`. It is **read-only**: it shows the current session
+  (signed-in email, "Not signed in", or "not available in this build") and
+  observes the session through `CloudDreamAuth.addUserStateListener`. No
+  credential is ever typed into the app yet.
 
-That is all. There are no Firestore reads/writes, no sync engine, no account
-UI, and no changes to CloudStream storage, bookmarks, player, or extensions.
-CloudStream stays fully usable with no account and when Firebase is
-unconfigured.
+That is all. There are no Firestore reads/writes, no sync engine, and no changes
+to CloudStream storage, bookmarks, player, or extensions. CloudStream stays fully
+usable with no account and when Firebase is unconfigured.
+
+### The Cloud settings section
+
+Settings → **Cloud** shows one row, "Status", whose subtitle is one of:
+
+| State | Shown as |
+|---|---|
+| Firebase not configured for this build | Cloud features are not available in this build |
+| Configured, signed out | Not signed in |
+| Configured, signed in | the account's email, or its uid if it has none |
+
+The row is intentionally not clickable. Signing in, registering and signing out
+are the next steps and are **not implemented yet**.
+
+This section is deliberately separate from CloudStream's own "Accounts and
+Security" section, which is about third-party sync providers (MyAnimeList,
+Kitsu, AniList, Simkl, …) and uses a different account model. A CloudDream
+account is a different kind of identity, so it gets its own hub entry.
 
 ### Using the authentication service
 
@@ -132,6 +156,18 @@ a Console-side setup task; Stage 1 does not automate it.
 | `app/src/main/java/com/lagradost/clouddream/auth/CloudDreamAuthError.kt` | Lightweight mapping of Firebase Auth failures |
 | `app/src/main/java/com/lagradost/clouddream/auth/CloudDreamUser.kt` | In-memory user snapshot (no tokens, nothing persisted) |
 | `app/src/main/java/com/lagradost/cloudstream3/CloudStreamApp.kt` | One guarded `CloudDream.init(this)` call |
+| `app/src/main/java/com/lagradost/clouddream/ui/CloudDreamCloudScreen.kt` | Phase 2B: the read-only Cloud settings screen (Compose `SearchableSettings`) |
+| `app/src/main/java/com/lagradost/clouddream/ui/CloudDreamCloudSettingsFragment.kt` | Glue binding the navigation destination to `CloudDreamCloudScreen` |
+| `app/src/main/res/navigation/mobile_navigation.xml` | `navigation_settings_cloud` destination + its global action |
+| `app/src/main/java/com/lagradost/cloudstream3/ui/settings/SettingsFragmentScreen.kt` | The "Cloud" hub tile (the only settings file CloudDream edits) |
+
+### Note on which settings file to edit
+
+CloudStream is mid-migration from XML/Preference settings to Compose. The **live**
+hub is the Compose `SettingsFragment2` → `SettingsFragmentScreen`; the older
+`SettingsFragment` + `res/layout/main_settings.xml` pair is dead legacy code that is
+no longer referenced by `mobile_navigation.xml`. CloudDream therefore only touches
+the Compose hub. If you are adding a settings row, add it to a `*Screen` object.
 
 ---
 
@@ -148,6 +184,11 @@ from `CloudSync` stating that Firebase configuration is absent.
 
 - Build with configuration present in `local.properties`: the same command
   succeeds and debug logcat shows `CloudSync: Firebase initialized`.
+
+- On device, open Settings and confirm a **Cloud** tile exists at the bottom of
+  the hub, after **Extensions**. Tapping it opens a "CloudDream account" group
+  with a single "Status" row. Without configuration it must read "Cloud features
+  are not available in this build" and must not crash.
 
 ---
 
@@ -167,10 +208,10 @@ from `CloudSync` stating that Firebase configuration is absent.
 
 ## 7. Planned later stages (not implemented)
 
-The sign-in and registration **UI**, Firestore data model and security rules,
-the sync engine, conflict resolution, offline queueing, and device
-registration are all future stages. This file will be extended as each stage
-lands.
+The sign-in and registration **form** (email and password fields, submit, error
+surfacing, sign-out), the Firestore data model and security rules, the sync
+engine, conflict resolution, offline queueing, and device registration are all
+future stages. This file will be extended as each stage lands.
 
 ### Adding `firebase-firestore` later — known dependency conflict
 
