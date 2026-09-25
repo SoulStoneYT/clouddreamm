@@ -13,6 +13,7 @@ import coil3.ImageLoader
 import coil3.PlatformContext
 import coil3.SingletonImageLoader
 import com.lagradost.api.setContext
+import com.lagradost.clouddream.CloudDream
 import com.lagradost.cloudstream3.BuildConfig
 import com.lagradost.cloudstream3.mvvm.safe
 import com.lagradost.cloudstream3.mvvm.safeAsync
@@ -84,6 +85,10 @@ class CloudStreamApp : Application(), SingletonImageLoader.Factory {
         }
 
         AppDebug.isDebug = BuildConfig.DEBUG
+
+        // CloudDream: optional Firebase foundation. Does nothing when Firebase
+        // configuration is absent and never throws (see CLOUDSYNC.md).
+        CloudDream.init(this)
     }
 
     override fun attachBaseContext(base: Context?) {

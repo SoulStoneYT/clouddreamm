@@ -114,6 +114,13 @@ android {
         // Reads local.properties
         val localProperties = gradleLocalProperties(rootDir, project.providers)
 
+        // CloudDream: optional Firebase configuration.
+        // Environment variables take precedence over local.properties. Missing values stay
+        // empty so the app can detect "not configured" and keep cloud features disabled
+        // instead of crashing. No credentials are ever stored in the repository.
+        fun cloudDreamFirebaseConfig(name: String): String =
+            System.getenv(name) ?: localProperties.getProperty(name) ?: ""
+
         buildConfigField(
             "long",
             "BUILD_DATE",
@@ -139,6 +146,35 @@ android {
             "ANILIST_KEY",
             "\"" + (System.getenv("ANILIST_KEY") ?: localProperties["anilist.key"]) + "\""
         )
+
+        // CloudDream Firebase configuration (see CLOUDSYNC.md).
+        // Empty string == not configured, which disables CloudDream cloud features.
+        buildConfigField(
+            "String",
+            "CLOUDDREAM_FIREBASE_API_KEY",
+            "\"" + cloudDreamFirebaseConfig("CLOUDDREAM_FIREBASE_API_KEY") + "\""
+        )
+        buildConfigField(
+            "String",
+            "CLOUDDREAM_FIREBASE_APP_ID",
+            "\"" + cloudDreamFirebaseConfig("CLOUDDREAM_FIREBASE_APP_ID") + "\""
+        )
+        buildConfigField(
+            "String",
+            "CLOUDDREAM_FIREBASE_PROJECT_ID",
+            "\"" + cloudDreamFirebaseConfig("CLOUDDREAM_FIREBASE_PROJECT_ID") + "\""
+        )
+        buildConfigField(
+            "String",
+            "CLOUDDREAM_FIREBASE_STORAGE_BUCKET",
+            "\"" + cloudDreamFirebaseConfig("CLOUDDREAM_FIREBASE_STORAGE_BUCKET") + "\""
+        )
+        buildConfigField(
+            "String",
+            "CLOUDDREAM_FIREBASE_MESSAGING_SENDER_ID",
+            "\"" + cloudDreamFirebaseConfig("CLOUDDREAM_FIREBASE_MESSAGING_SENDER_ID") + "\""
+        )
+
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
@@ -289,6 +325,16 @@ dependencies {
     // Downloading & Networking
     implementation(libs.work.runtime.ktx)
     implementation(libs.nicehttp) // HTTP Lib
+
+    // CloudDream (Phase 1) — optional Firebase foundation.
+    // Configuration is supplied at build time through environment variables or
+    // local.properties; no google-services.json and no Google Services Gradle plugin.
+    // Stage 1 ships the BoM and firebase-auth only. firebase-firestore is deliberately
+    // deferred to the Firestore sync stage: it pulls protolite-well-known-types, which
+    // bundles its own copy of the DescriptorProtos schema classes, so it cannot coexist
+    // with protobuf-javalite >= 4.27 (see CLOUDSYNC.md section 7).
+    implementation(platform(libs.firebase.bom))
+    implementation(libs.firebase.auth)
 
     implementation(libs.bundles.compose)
     implementation(libs.activity.compose)
