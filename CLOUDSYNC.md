@@ -1,17 +1,23 @@
 # CLOUDSYNC.md — CloudDream Cloud Synchronization
 
-Status: **Phase 2A, 2B and 2C complete — Firebase foundation, a working account UI
-(sign in, create account, sign out), and the cloud-sync foundation: Firestore is
-wired up and the protobuf conflict is resolved. Nothing reads or writes cloud
-data yet.**
+Status: **Phases 2A, 2B, 2C and 2D.1 complete — Firebase foundation, a working
+account UI (sign in, create account, sign out), the cloud-sync foundation
+(Firestore wired up, protobuf conflict resolved), and the first real bridge:
+bookmark + title watch-state sync between `DataStoreHelper` and Firestore.**
 
 This document describes only what is implemented today. The account UI exists
 and works, but it only establishes an identity. The sync **foundation** exists —
 Firestore is a dependency, the schema and the media identity are defined, and
-the sync manager can read and write records — but **nothing in the app calls it
-yet**. There is no automatic sync, no playback integration, no conflict
-resolution and no device management. CloudStream's own storage is still the only
-thing the app uses.
+the sync manager can read, write and delete records.
+
+Phase 2D.1 adds a working **local ⇄ cloud** path for bookmarks and title watch
+state: `CloudDreamBookmarkAdapter` reads CloudStream's local library through
+`DataStoreHelper`'s public APIs, converts it to cloud records, uploads it, pulls
+the cloud back down and applies it. It is driven by one explicit
+`syncBookmarksOnce()` call. **Nothing in the app calls it automatically** — no
+WorkManager, no background trigger, no screen, no menu action, no hook on the
+bookmark write path. There is still no playback integration, no progress or
+history sync, no conflict-resolution engine and no device management.
 
 ---
 
@@ -43,10 +49,21 @@ thing the app uses.
   identity (`CloudDreamDeviceId`), the `CloudDreamSyncManager` interface, and
   `FirestoreCloudDreamSyncManager` as its only implementation. The schema is
   documented in section 7.
+- **Phase 2D.1:** bookmark + title watch-state sync. A new
+  `com.lagradost.clouddream.sync.local` package holds the local bridge:
+  `LocalBookmarkStore` (the narrow `DataStoreHelper` surface sync needs, plus its
+  `DataStoreBookmarkStore` implementation), `BookmarkMapper` (the pure,
+  Android-free local ⇄ cloud conversion) and `CloudDreamBookmarkAdapter` (the
+  orchestrator, with `snapshotBookmarks`, `putBookmarkLocally`,
+  `deleteBookmarkLocally` and the one-shot `syncBookmarksOnce`).
+  `CloudDreamSyncManager` gained `deleteBookmark(key)` so an unbookmark can reach
+  the cloud. Section 8 documents the architecture and section 9 the limitations.
 
-That is all. **No screen, no player and no storage layer calls the sync
-manager.** There is no sync engine, no automatic trigger and no conflict
-resolution, and there are no changes to CloudStream storage, bookmarks, player,
+That is all. **No screen, no player and no automatic trigger calls the sync
+manager.** Bookmark and title watch state are the only synced entities:
+**playback progress and continue-watching history are not implemented** and are
+deliberately untouched. There is no conflict-resolution engine, and there are no
+changes to CloudStream's storage schema, its `BookmarkedData` model, the player,
 or extensions. CloudStream stays fully usable with no account, when Firebase is
 unconfigured, and when Firestore is unreachable.
 
@@ -203,7 +220,11 @@ a Console-side setup task; Stage 1 does not automate it.
 | `app/src/main/java/com/lagradost/clouddream/sync/CloudDreamSyncManager.kt` | The backend-agnostic sync interface (no Firestore type appears in it) |
 | `app/src/main/java/com/lagradost/clouddream/sync/FirestoreCloudDreamSyncManager.kt` | The only file that knows Firestore exists |
 | `app/src/main/java/com/lagradost/clouddream/sync/CloudDreamFirestoreSchema.kt` | Collection and field names, in one reviewable place |
+| `app/src/main/java/com/lagradost/clouddream/sync/local/LocalBookmarkStore.kt` | Phase 2D.1: the narrow `DataStoreHelper` surface bookmark sync needs, plus `DataStoreBookmarkStore` |
+| `app/src/main/java/com/lagradost/clouddream/sync/local/BookmarkMapper.kt` | Phase 2D.1: pure local ⇄ cloud conversion (no Android, no Firestore, no `DataStoreHelper`) |
+| `app/src/main/java/com/lagradost/clouddream/sync/local/CloudDreamBookmarkAdapter.kt` | Phase 2D.1: the bridge — snapshot, apply, delete, and the one-shot `syncBookmarksOnce` |
 | `app/src/test/java/com/lagradost/clouddream/sync/CloudDreamMediaKeyTest.kt` | Locks down determinism and non-collision of the media identity |
+| `app/src/test/java/com/lagradost/clouddream/sync/local/CloudDreamBookmarkAdapterTest.kt` | Phase 2D.1: mapping, watch type, key generation, merge, no-op and deletion behaviour (no Firebase credentials needed) |
 
 ### Note on which settings file to edit
 
@@ -264,6 +285,28 @@ returned.
 
 There is deliberately no on-device check for sync in this phase, because nothing
 in the app calls the sync manager yet.
+
+### Verifying bookmark + watch-state sync (Phase 2D.1)
+
+```powershell
+# Everything, on the JVM. No device, no Firebase project, no credentials.
+.\gradlew.bat :app:testStableDebug
+
+# Both variants still package.
+.\gradlew.bat :app:assembleStableDebug :app:assemblePrereleaseDebug
+
+# The protobuf/protolite regression check, re-executed rather than trusted
+# from cache (Gradle reports UP-TO-DATE for these when nothing changed).
+.\gradlew.bat :app:checkStableDebugDuplicateClasses --rerun
+.\gradlew.bat :app:checkPrereleaseDebugDuplicateClasses --rerun
+```
+
+`:app:testStableDebug` runs the whole unit-test source set, which is 51 tests:
+13 in `CloudDreamMediaKeyTest`, 30 in `CloudDreamBookmarkAdapterTest` and 8
+pre-existing `SubtitleLanguageTagTest` cases.
+
+There is still **no on-device check for Phase 2D.1**, because nothing in the app
+invokes `syncBookmarksOnce()` yet. Wiring it to a trigger is a later stage.
 
 ### 5.1 Firestore verification record
 
@@ -507,10 +550,290 @@ both pass.
 
 ---
 
-## 8. Planned later stages (not implemented)
+## 8. Bookmark + title watch-state sync (Phase 2D.1)
 
-Automatic and background sync, WorkManager, playback integration, conflict
-resolution, offline queueing and paging, device registration and revocation,
+### 8.1 The bridge
+
+```
+CloudStream local library                  Firestore
+       │                                       │
+       ▼                                       ▼
+ LocalBookmarkStore ──► CloudDreamBookmarkAdapter ──► CloudDreamSyncManager
+ (DataStoreBookmarkStore)   (orchestrates)         (FirestoreCloudDreamSyncManager)
+       │                                       │
+       ▼                                       ▼
+ setBookmarkedData / setResultWatchState   putBookmark / listBookmarks /
+ deleteBookmarkedData                      deleteBookmark
+```
+
+Three files, each with one job:
+
+- **`LocalBookmarkStore`** — the narrow slice of `DataStoreHelper` that sync needs:
+  `watchStateIds()`, `getWatchState(id)`, `getBookmarkData(id)`,
+  `setBookmarkData(id, data)`, `setWatchState(id, watchTypeId)`,
+  `deleteBookmarkData(id)`. `DataStoreBookmarkStore` is the production
+  implementation and delegates to `DataStoreHelper`'s public methods.
+
+  The interface exists so CloudDream depends on a six-method surface rather than
+  on a SharedPreferences singleton, and so the adapter can be tested on the JVM
+  with an in-memory fake.
+
+- **`BookmarkMapper`** — the pure conversion. It holds no reference to
+  `DataStoreHelper`, to the sync manager, to Firestore or to any Android API,
+  which is exactly what makes the mapping contract testable without a device.
+  `internal`, so it is not part of CloudDream's published surface.
+
+- **`CloudDreamBookmarkAdapter`** — the orchestrator. Four suspend functions,
+  all doing their blocking storage work on `Dispatchers.IO`:
+  `snapshotBookmarks()`, `putBookmarkLocally(record)`, `deleteBookmarkLocally(id)`
+  and `syncBookmarksOnce()`. Its constructor takes a nullable `Context`, the
+  manager, and — defaulted, for tests — the store and a device-id supplier.
+
+**DataStoreHelper is the only storage boundary.** The adapter never touches
+`rebuild_preference` or a `SharedPreferences` directly; it goes through
+`DataStoreBookmarkStore`. No CloudStream model was modified.
+
+### 8.2 Why bookmark and watch state are one record
+
+CloudStream stores them as **two keys under one local integer id**:
+
+| Local key | Value |
+|---|---|
+| `$acct/result_watch_state_data/{id}` | `BookmarkedData` JSON |
+| `$acct/result_watch_state/{id}` | `WatchType.internalId` as an `Int` |
+
+`setResultWatchState(id, NONE)` calls `deleteBookmarkedData(id)`, which removes
+**both** keys. So a title with `WatchType.NONE` does not exist locally: "NONE"
+*is* "unbookmarked". That makes bookmark + title watch state a single logical
+entity, which is exactly what `CloudDreamBookmarkRecord` already models with
+its `watchType` field. No new cloud record type was needed.
+
+They can still diverge if a caller writes one without the other.
+`snapshotBookmarks()` mirrors the library's own read path
+(`HomeViewModel.loadStoredData`): enumerate `getAllWatchStateIds()`, pair each id
+with `getBookmarkedData(id)`, and **skip ids that have no metadata** — the library
+skips those when rendering the home screen, so syncing them would upload rows
+the user cannot see.
+
+### 8.3 Local → cloud mapping
+
+For each id in `getAllWatchStateIds()`:
+
+| Cloud field | Local source |
+|---|---|
+| `key` | `CloudDreamMediaKey.forTitle(apiName, data.type!!.name, data.url, data.year)` |
+| `name` | `data.name` |
+| `watchType` | `WatchType.fromInternalId(...).name` — a **name**, never the raw int |
+| `posterUrl` | `data.posterUrl` |
+| `plot` | `data.plot` |
+| `tags` | `data.tags` |
+| `bookmarkedAt` | `data.bookmarkedTime` |
+| `localId` | `data.id` (debugging aid only, never the identity) |
+| `meta.updatedAt` | **`data.latestUpdatedTime`** |
+| `meta.deviceId` | `CloudDreamDeviceId.get(context)` |
+
+Skipped entirely: rows with no `BookmarkedData`, rows whose watch type is
+`NONE`, and rows with no `TvType` (no `TvType` means no key can be formed). The
+result is ordered by `latestUpdatedTime` descending, matching the local library
+sort.
+
+**The local `Int` id is never the cloud identity.** The document id is
+`CloudDreamMediaKey.documentId`, a 128-bit SHA-256 prefix. `localId` is carried
+only so a pull on the same device can find the local key to write under.
+
+**`meta.updatedAt` is the local write clock, not the upload clock.**
+`latestUpdatedTime` is when the user last changed the bookmark. If `updatedAt`
+were stamped with `System.currentTimeMillis()` at upload time, a record that
+changed in January but was first synced in June would look newer than a record
+genuinely edited in May, and last-writer-wins would then resolve the wrong way.
+The adapter therefore constructs `CloudDreamRecordMeta` directly rather than
+going through `FirestoreCloudDreamSyncManager.newMeta()`.
+
+### 8.4 Cloud → local mapping
+
+For a `CloudDreamBookmarkRecord`:
+
+1. `watchType` is resolved by **enum name** — `WatchType.entries.find { it.name == ... }`.
+   An unknown, blank or `NONE` value means the record is **invalid and skipped**;
+   no state is invented and neither setter is called.
+2. `key.type` is resolved to a `TvType` the same way (by name, never ordinal).
+   An unresolvable value is likewise skipped.
+3. `BookmarkedData` is reconstructed: `url ← key.uniqueUrl`, `apiName ←
+   key.apiName`, `type ← TvType`, `year ← key.year`, `name ← record.name`,
+   `posterUrl`/`plot`/`tags` copied, `bookmarkedTime ← record.bookmarkedAt`, and
+   `latestUpdatedTime ← record.meta.updatedAt`.
+4. Both keys are written through `DataStoreHelper`: `setBookmarkedData(localId, …)`
+   then `setResultWatchState(localId, watchType.internalId)`.
+
+A record with **no `localId`** is skipped, because there is no local key to write
+under. `putBookmarkLocally` returns a `Failure` for both cases and logs the
+canonical key, so a bad document is visible in logcat rather than silently
+dropped.
+
+The write order matters: `setResultWatchState` with a non-`NONE` status does not
+create metadata, and `setBookmarkedData` does not set the status, so both are
+always written.
+
+### 8.5 Watch type is stored by name
+
+`WatchType` has six entries (`WATCHING`, `COMPLETED`, `ONHOLD`, `DROPPED`,
+`PLANTOWATCH`, `NONE`) and locally persists as the raw `Int` `internalId`. The
+cloud record stores `WatchType.name`.
+
+The integer is not portable: the local enum's ordinals are not a wire format, and
+`DataStoreHelper.serializeTv` already serializes `TvType` by name for the same
+reason. So the conversion is always `Int → fromInternalId → name` on upload and
+`name → entries.find → internalId` on download, both in `BookmarkMapper` and both
+locked down by tests.
+
+`NONE` is never uploaded and never applied. A `NONE` document from some other
+writer is rejected rather than turned into a local unbookmark, because 2D.1 has no
+tombstone semantics (see §9).
+
+Note the local `WatchType` (6 values) is not the same enum as `SyncWatchType`
+(7 values, with `REWATCHING`, used by the MAL/AniList/Kitsu/Simkl providers).
+`CloudDreamBookmarkRecord.watchType` is a `WatchType` name; `REWATCHING` has no
+counterpart and a document carrying it is rejected.
+
+### 8.6 One-shot sync
+
+`syncBookmarksOnce()` is the entire sync surface in 2D.1:
+
+1. `manager.listBookmarks()`. A `Skipped` (signed out / not configured /
+   Firestore unavailable) or a `Failure` is **propagated unchanged and nothing
+   else runs** — not one local read or write happens on a signed-out sync.
+2. `snapshotBookmarks()` for the local side.
+3. **Download.** Records are matched by `key.documentId`. A cloud record that is
+   absent locally, or strictly newer (`cloud.meta.updatedAt > local.meta.updatedAt`),
+   is applied via `putBookmarkLocally`. Anything else is left alone.
+4. **Upload.** A local record that is absent from the cloud, or strictly newer,
+   is pushed with `putBookmark`.
+5. Returns `Success(Unit)`. Per-record failures are logged and do not abort the
+   run.
+
+**Equal timestamps are left untouched on both sides** — no write, no churn.
+
+This is plain per-record **last-writer-wins**. It is not a conflict-resolution
+engine: there is no field-level merge, no vector clock, and no user-facing choice.
+`updatedAt` comes from each device's own wall clock, so a device whose clock is
+wrong can win a merge it should lose. That is a known limitation of the phase,
+not a solved problem.
+
+**It runs only when something calls it.** There is no WorkManager job, no
+`bookmarksUpdatedEvent` listener, no sign-in hook and no settings action, and it
+is never called from `setBookmarkedData` or `setResultWatchState`. The
+`bookmarksUpdatedEvent` signal is in any case unreliable for this purpose —
+`setBookmarkedData` and `deleteBookmarkedData` do not fire it, so a deletion made
+through those paths would be missed entirely. An explicit trigger is the honest
+option at this stage.
+
+### 8.7 Cloud deletion
+
+Phase 2C had no delete operation at all, so 2D.1 added one:
+
+```kotlin
+suspend fun deleteBookmark(key: CloudDreamMediaKey): CloudDreamSyncResult<Unit>
+```
+
+`FirestoreCloudDreamSyncManager` implements it as
+`users/{uid}/bookmarks/{key.documentId}.delete()`, inside the same `withFirestore`
+guard as every other operation, so it returns `Skipped` when signed out or
+unconfigured and never throws.
+
+`CloudDreamBookmarkAdapter.deleteBookmarkLocally(id)` is the only caller, and it
+has to run in a strict order, because the key can only be derived from data that
+the local delete destroys:
+
+1. read the existing `BookmarkedData` for `id`,
+2. derive its `CloudDreamMediaKey` from it,
+3. `manager.deleteBookmark(key)`,
+4. `local.deleteBookmarkData(id)` — which clears both local keys.
+
+A `null` id, or an id with no `BookmarkedData`, is a no-op. A record with no
+`TvType` still clears locally and reports `Success`, because such a row was never
+uploaded in the first place, so there is nothing on the cloud to remove.
+
+---
+
+## 9. Phase 2D.1 limitations
+
+These are real and unresolved. They are listed so a later stage can close them
+rather than rediscover them.
+
+**Deletions are not propagated automatically.** `syncBookmarksOnce()` never
+deletes anything on either side, and `deleteBookmarkLocally()` is not wired into
+the UI. A user who unbookmarks a title does **not** remove it from the cloud
+until a caller invokes the bridge; and because the cloud document still exists,
+the next `syncBookmarksOnce()` will simply re-apply it and the bookmark comes
+back. **Unbookmarking is not yet durable across a sync.**
+
+**There are no cloud tombstones.** A deleted record is removed rather than marked
+deleted, so the sync has no way to distinguish "deleted on device A" from "not
+present because device A has not synced yet". A later stage needs either a
+tombstone field or a delete-wins timestamp, plus a decision about whether
+`SyncWatchType.REWATCHING` needs representing.
+
+**Cloud → local delete has no key to aim at.** The only handle on a local record
+is the provider-scoped `localId` int. Without it there is no way to target a
+local deletion, and re-deriving the key is not possible because `uniqueUrl` is
+not persisted (below). A record without `localId` is skipped, not applied.
+
+**`uniqueUrl` is not persisted, so `BookmarkedData.url` is used instead.**
+`BookmarkedData` extends `LibrarySearchResponse` → `SearchResponse`, and
+`uniqueUrl` is declared on the separate `LoadResponse` interface — so a locally
+stored bookmark keeps `url` only. CloudDream therefore builds the key from
+`data.url`, which matches `uniqueUrl` for the large majority of providers
+(CloudStream itself persists `url`, and the local int id is derived from
+`uniqueUrl`, so the two usually agree).
+
+The exception is a provider that **overrides `uniqueUrl` to something other than
+`url`** — Trakt is the known case. There, the key is built from `url`, which is
+not the field the local id was derived from, so cross-device matching is weaker
+than the design intends. Fixing it properly means persisting `uniqueUrl` into
+`BookmarkedData`, which is a CloudStream storage-schema change and is explicitly
+**out of scope for 2D.1**.
+
+**`localId` is not durable.** It is `getLoadResponseIdFromUrl`'s 32-bit
+provider-scoped hash and it moves if a provider's `mainUrl` or URL format
+changes — the exact failure the `result_resume_watching` →
+`result_resume_watching_2` migration was written for. It is used as a
+best-effort local handle and must never be treated as an identity.
+
+**One local account maps to one Firebase uid, and only the selected one.**
+CloudStream namespaces local storage by `DataStoreHelper.currentAccount`, an
+account **index**; Firestore namespaces by the Firebase Auth `uid`. These are
+unrelated namespaces. 2D.1 syncs **only the currently selected CloudStream local
+account** to the currently signed-in Firebase account, and does no merging.
+Switching CloudStream accounts while signed in to Firebase will mix the two
+local accounts' bookmarks into the same `users/{uid}/bookmarks` subtree.
+Resolving this needs a stored mapping from local account to uid.
+
+**The clock is trusted.** `updatedAt` is each device's own
+`System.currentTimeMillis()`. Skewed clocks resolve last-writer-wins incorrectly,
+and `deviceId` is recorded but not yet used to arbitrate.
+
+**`listBookmarks()` is a single unpaginated read.** Fine for a personal library;
+it needs paging or an incremental pull before a large account.
+
+**Untyped provider data is preserved but not merged.** `syncData`, `quality`,
+`posterHeaders` and `score` are local-only and are neither uploaded nor cleared
+by a pull. `latestUpdatedTime` on a record pulled from the cloud is set from the
+cloud `updatedAt`, so a pulled bookmark is correctly ordered locally.
+
+**Verification gap.** All 30 adapter tests run on the JVM against fakes.
+`FirestoreCloudDreamSyncManager.deleteBookmark` — and the whole Phase 2D.1
+path — has **not** been exercised on a real device or against a real Firestore
+project, for the same reason 2C needed a probe: nothing in the app invokes
+`syncBookmarksOnce()`, so there is no entry point to drive it from.
+
+---
+
+## 10. Planned later stages (not implemented)
+
+Wiring `syncBookmarksOnce()` to a trigger (a settings action or a sign-in hook
+first, then WorkManager), playback progress sync, continue-watching history sync,
+conflict resolution, tombstones, deletion propagation, offline queueing and
+paging, device registration and revocation, multi-local-account mapping,
 extension repository and extension configuration syncing, a sync UI, and a web
 client are all future stages. So are email verification, password reset and a
 "resend verification email" flow. This file will be extended as each stage

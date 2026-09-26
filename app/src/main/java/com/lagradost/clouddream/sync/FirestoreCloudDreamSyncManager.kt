@@ -126,6 +126,18 @@ class FirestoreCloudDreamSyncManager(context: Context) : CloudDreamSyncManager {
     override suspend fun putBookmark(record: CloudDreamBookmarkRecord): CloudDreamSyncResult<Unit> =
         writeRecord(CloudDreamFirestore.BOOKMARKS, record.key.documentId) { bookmarkDoc(record) }
 
+    /** A full-document delete of a bookmark. [CloudDreamSyncManager.deleteBookmark] contract. */
+    override suspend fun deleteBookmark(key: CloudDreamMediaKey): CloudDreamSyncResult<Unit> =
+        withFirestore { uid, db ->
+            db.collection(CloudDreamFirestore.USERS)
+                .document(uid)
+                .collection(CloudDreamFirestore.BOOKMARKS)
+                .document(key.documentId)
+                .delete()
+                .await()
+            CloudDreamSyncResult.Success(Unit)
+        }
+
     override suspend fun putHistory(record: CloudDreamHistoryRecord): CloudDreamSyncResult<Unit> =
         writeRecord(CloudDreamFirestore.HISTORY, record.key.documentId) { historyDoc(record) }
 

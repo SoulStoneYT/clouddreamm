@@ -17,8 +17,10 @@ import kotlinx.coroutines.flow.StateFlow
  * - **No Firestore type appears in this file**, so callers cannot become coupled to the
  *   backend.
  *
- * No implementation is wired into the player, the library or any screen yet. That is
- * deliberate: this is the Phase 2C foundation only.
+ * No implementation is wired into the player or the library yet. Phase 2D.1 added
+ * `com.lagradost.clouddream.sync.local.CloudDreamBookmarkAdapter`, which drives this
+ * interface for bookmarks and title watch state, but only from an explicit one-shot
+ * call — nothing in the app invokes it automatically, and no screen triggers it.
  */
 interface CloudDreamSyncManager {
 
@@ -31,6 +33,17 @@ interface CloudDreamSyncManager {
     suspend fun putProgress(record: CloudDreamProgressRecord): CloudDreamSyncResult<Unit>
 
     suspend fun putBookmark(record: CloudDreamBookmarkRecord): CloudDreamSyncResult<Unit>
+
+    /**
+     * Removes a bookmark document from the cloud by its stable media key.
+     *
+     * This is the Phase 2D.1 cloud-side half of an unbookmark: the local adapter
+     * derives the key from the local `BookmarkedData` before the local record is
+     * deleted, then calls this. It is a no-op (returns [CloudDreamSyncResult.Skipped])
+     * when the user is signed out or Firebase is unconfigured, exactly like the
+     * other operations.
+     */
+    suspend fun deleteBookmark(key: CloudDreamMediaKey): CloudDreamSyncResult<Unit>
 
     suspend fun putHistory(record: CloudDreamHistoryRecord): CloudDreamSyncResult<Unit>
 

@@ -12,6 +12,9 @@
 .cxx
 .kotlin/*
 
+# Kilo agent/editor state: local config and saved plans. Never part of the project.
+.kilo/
+
 # Created by https://www.toptal.com/developers/gitignore/api/kotlin,java,android,androidstudio,visualstudiocode
 # Edit at https://www.toptal.com/developers/gitignore?templates=kotlin,java,android,androidstudio,visualstudiocode
 
