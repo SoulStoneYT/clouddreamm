@@ -389,6 +389,12 @@
     <string name="clouddream_signing_out">Signing out…</string>
     <string name="clouddream_show_password">Show password</string>
     <string name="clouddream_hide_password">Hide password</string>
+    <!-- CloudDream: bookmark sync (Phase 2D.2) -->
+    <string name="clouddream_sync_now">Sync Now</string>
+    <string name="clouddream_sync_idle">Bookmarks and watch status</string>
+    <string name="clouddream_sync_syncing">Syncing…</string>
+    <string name="clouddream_sync_success">Up to date</string>
+    <string name="clouddream_sync_failed">Sync failed — tap to try again</string>
     <!-- CloudDream: locally validated input errors -->
     <string name="clouddream_error_email_required">Enter your email address</string>
     <string name="clouddream_error_email_invalid">That email address does not look right</string>

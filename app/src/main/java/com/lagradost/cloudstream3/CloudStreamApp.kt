@@ -14,6 +14,7 @@ import coil3.PlatformContext
 import coil3.SingletonImageLoader
 import com.lagradost.api.setContext
 import com.lagradost.clouddream.CloudDream
+import com.lagradost.clouddream.sync.CloudDreamSync
 import com.lagradost.cloudstream3.BuildConfig
 import com.lagradost.cloudstream3.mvvm.safe
 import com.lagradost.cloudstream3.mvvm.safeAsync
@@ -89,6 +90,11 @@ class CloudStreamApp : Application(), SingletonImageLoader.Factory {
         // CloudDream: optional Firebase foundation. Does nothing when Firebase
         // configuration is absent and never throws (see CLOUDSYNC.md).
         CloudDream.init(this)
+
+        // CloudDream: bookmark sync. Installs a session listener and runs at most one
+        // foreground pass per sign-in / app start. No network work happens on this thread
+        // and nothing here gates startup.
+        CloudDreamSync.install(this)
     }
 
     override fun attachBaseContext(base: Context?) {

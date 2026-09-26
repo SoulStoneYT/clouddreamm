@@ -4,6 +4,7 @@ import android.widget.Toast
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.State
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -15,11 +16,15 @@ import com.lagradost.clouddream.auth.CloudDreamAuth
 import com.lagradost.clouddream.auth.CloudDreamAuthResult
 import com.lagradost.clouddream.auth.CloudDreamUser
 import com.lagradost.clouddream.auth.toMessageRes
+import com.lagradost.clouddream.sync.CloudDreamBookmarkSyncState
+import com.lagradost.clouddream.sync.CloudDreamSync
 import com.lagradost.cloudstream3.CommonActivity.showToast
 import com.lagradost.cloudstream3.R
 import com.mihon.presentation.settings.Preference
 import com.mihon.presentation.settings.SearchableSettings
 import kotlinx.collections.immutable.persistentListOf
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
 
 /**
@@ -31,11 +36,12 @@ import kotlinx.coroutines.launch
  * 1. **Unavailable** — Firebase was never configured for this build, so the screen says so
  *    and offers nothing. CloudStream stays fully usable.
  * 2. **Signed out** — the credential form (email, password, sign in, create account).
- * 3. **Signed in** — the account's email plus a sign-out action.
+ * 3. **Signed in** — the account's email, a **Sync Now** row (Phase 2D.2) and a sign-out
+ *    action.
  *
- * There is no Firebase type in this file: every call goes through [CloudDreamAuth], and
- * nothing is persisted, logged or cached here. Signing in is opt-in and never happens at
- * startup, so the app is never gated on an account.
+ * There is no Firebase type in this file: every call goes through [CloudDreamAuth] or
+ * [CloudDreamSync], and nothing is persisted, logged or cached here. Signing in is opt-in
+ * and never happens at startup, so the app is never gated on an account.
  */
 object CloudDreamCloudScreen : SearchableSettings {
 
@@ -108,6 +114,7 @@ object CloudDreamCloudScreen : SearchableSettings {
                     title = groupTitle,
                     preferenceItems = persistentListOf(
                         statusRow,
+                        syncNowRow(scope, user != null),
                         Preference.PreferenceItem.TextPreference(
                             title = stringResource(
                                 if (pending == CloudDreamAuthAction.SIGN_OUT) {
@@ -145,6 +152,53 @@ object CloudDreamCloudScreen : SearchableSettings {
                 )
             )
         }
+    }
+
+    /**
+     * The Phase 2D.2 "Sync Now" row, shown only in the signed-in state.
+     *
+     * It calls exactly the same [CloudDreamBookmarkSyncService.syncNow] the lifecycle
+     * triggers use, so a manual sync and an automatic one cannot diverge. The row renders
+     * only the coarse [CloudDreamBookmarkSyncState], never a Firestore error, so no
+     * implementation detail reaches the user.
+     *
+     * While a pass is running the row stays visible but drops its `onClick` — the same
+     * convention the sign-out row uses, because a disabled `PreferenceItem` would animate
+     * out of the layout instead of greying out.
+     */
+    @Composable
+    private fun syncNowRow(scope: CoroutineScope, signedIn: Boolean): Preference.PreferenceItem.TextPreference {
+        val service = CloudDreamSync.serviceOrNull()
+        val state by (service?.state ?: remember { MutableStateFlow(CloudDreamBookmarkSyncState.Idle) })
+            .collectAsState()
+
+        val syncing = state == CloudDreamBookmarkSyncState.Syncing
+        val subtitle = when (state) {
+            is CloudDreamBookmarkSyncState.Syncing -> stringResource(R.string.clouddream_sync_syncing)
+            is CloudDreamBookmarkSyncState.Success -> stringResource(R.string.clouddream_sync_success)
+            is CloudDreamBookmarkSyncState.Failure -> stringResource(R.string.clouddream_sync_failed)
+            // Idle, and the build-has-no-sync-service case, share this wording.
+            is CloudDreamBookmarkSyncState.Idle -> stringResource(R.string.clouddream_sync_idle)
+        }
+
+        return Preference.PreferenceItem.TextPreference(
+            title = stringResource(R.string.clouddream_sync_now),
+            subtitle = subtitle,
+            icon = painterResource(R.drawable.baseline_sync_24),
+            // No service means sync is not installed (unconfigured build), so the row is
+            // present but inert rather than crashing or disappearing mid-list.
+            onClick = if (service == null || syncing || !signedIn) {
+                null
+            } else {
+                {
+                    scope.launch {
+                        // Fire and forget: the row's own state flow reports the outcome,
+                        // and a failure must never surface as an error dialog here.
+                        service.syncNow()
+                    }
+                }
+            },
+        )
     }
 }
 

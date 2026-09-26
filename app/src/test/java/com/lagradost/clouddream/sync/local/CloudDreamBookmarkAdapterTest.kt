@@ -39,15 +39,28 @@ class CloudDreamBookmarkAdapterTest {
 
     // ---------------------------------------------------------------- fakes
 
-    /** In-memory stand-in for the `DataStoreHelper` slice bookmark sync needs. */
-    private class FakeLocalStore : LocalBookmarkStore {
+    /**
+     * In-memory stand-in for the `DataStoreHelper` slice bookmark sync needs.
+     *
+     * @param log shared ordered call log. A test that needs to assert *interleaving*
+     *   between local and cloud operations must pass the same list to both fakes,
+     *   since each otherwise records into its own.
+     */
+    private class FakeLocalStore(
+        private val log: MutableList<String> = mutableListOf(),
+    ) : LocalBookmarkStore {
         val data = mutableMapOf<Int, BookmarkedData>()
         val watchStates = mutableMapOf<Int, WatchType>()
+
+        /** Ordered log of cloud/local calls, so ordering guarantees can be asserted. */
+        val calls: MutableList<String> get() = log
 
         override fun watchStateIds(): List<Int> = watchStates.keys.sorted()
         override fun getWatchState(id: Int): WatchType = watchStates[id] ?: WatchType.NONE
         override fun getBookmarkData(id: Int?): BookmarkedData? = data[id]
+
         override fun setBookmarkData(id: Int?, data: BookmarkedData) {
+            calls += "local.set(${requireNotNull(id)})"
             this.data[requireNotNull(id)] = data
         }
 
@@ -64,6 +77,7 @@ class CloudDreamBookmarkAdapterTest {
 
         override fun deleteBookmarkData(id: Int?) {
             val key = requireNotNull(id)
+            calls += "local.delete($key)"
             watchStates.remove(key)
             data.remove(key)
         }
@@ -75,7 +89,9 @@ class CloudDreamBookmarkAdapterTest {
     }
 
     /** Records every call so the tests can assert the bridge actually talked to the cloud. */
-    private class FakeSyncManager : CloudDreamSyncManager {
+    private class FakeSyncManager(
+        private val log: MutableList<String> = mutableListOf(),
+    ) : CloudDreamSyncManager {
         private val mutableState = MutableStateFlow(CloudDreamSyncState(CloudDreamSyncAvailability.READY))
         override val state: StateFlow<CloudDreamSyncState> get() = mutableState
 
@@ -83,8 +99,13 @@ class CloudDreamBookmarkAdapterTest {
         val uploaded = mutableListOf<CloudDreamBookmarkRecord>()
         val deletedKeys = mutableListOf<String>()
 
+        /** Ordered log of cloud/local calls, so test-ordering guarantees can be asserted. */
+        val calls: MutableList<String> get() = log
+
         var listResult: CloudDreamSyncResult<List<CloudDreamBookmarkRecord>> =
             CloudDreamSyncResult.Success(emptyList())
+
+        var deleteResult: CloudDreamSyncResult<Unit> = CloudDreamSyncResult.Success(Unit)
 
         override suspend fun ensureUserDocument(): CloudDreamSyncResult<Unit> =
             CloudDreamSyncResult.Success(Unit)
@@ -106,9 +127,12 @@ class CloudDreamBookmarkAdapterTest {
         }
 
         override suspend fun deleteBookmark(key: CloudDreamMediaKey): CloudDreamSyncResult<Unit> {
-            deletedKeys += key.documentId
-            bookmarks.remove(key.documentId)
-            return CloudDreamSyncResult.Success(Unit)
+            calls += "cloud.delete(${key.documentId})"
+            if (deleteResult is CloudDreamSyncResult.Success) {
+                deletedKeys += key.documentId
+                bookmarks.remove(key.documentId)
+            }
+            return deleteResult
         }
 
         override suspend fun listBookmarks() = listResult
@@ -169,7 +193,6 @@ class CloudDreamBookmarkAdapterTest {
         local: LocalBookmarkStore,
         manager: CloudDreamSyncManager,
     ) = CloudDreamBookmarkAdapter(
-        context = null,
         manager = manager,
         local = local,
         deviceId = { DEVICE_ID },
@@ -511,5 +534,171 @@ class CloudDreamBookmarkAdapterTest {
         val data = bookmark()
         assertEquals(BookmarkMapper.keyFor(data), BookmarkMapper.keyFor(data))
         assertNull(BookmarkMapper.keyFor(null))
+    }
+
+    // ------------------------------------------- malformed local data (issue C)
+
+    @Test
+    fun `a blank apiName cannot form a key and is skipped rather than thrown`() {
+        // CloudDreamMediaKey.require() would throw on this; the mapper must not reach it.
+        assertNull(BookmarkMapper.keyFor(bookmark(apiName = "")))
+        assertNull(BookmarkMapper.keyFor(bookmark(apiName = "   ")))
+        assertNull(BookmarkMapper.toCloud(bookmark(apiName = ""), WatchType.WATCHING, DEVICE_ID))
+    }
+
+    @Test
+    fun `a malformed bookmark is skipped without failing the whole snapshot`() {
+        val local = FakeLocalStore()
+        local.put(1, bookmark(id = 1, url = "anime:1", name = "Good", latestUpdatedTime = 900L), WatchType.WATCHING)
+        // apiName blank: the exact input that used to throw out of CloudDreamMediaKey.
+        local.put(2, bookmark(id = 2, url = "anime:2", name = "Corrupt", apiName = "", latestUpdatedTime = 800L), WatchType.WATCHING)
+        local.put(3, bookmark(id = 3, url = "anime:3", name = "Also good", latestUpdatedTime = 700L), WatchType.COMPLETED)
+
+        val records = snapshot(adapter(local, FakeSyncManager()))
+
+        // The good rows still sync; the corrupt one is dropped, not thrown over.
+        assertEquals(listOf("Good", "Also good"), records.map { it.name })
+    }
+
+    @Test
+    fun `a snapshot of only malformed bookmarks yields an empty result, not an exception`() {
+        val local = FakeLocalStore()
+        local.put(1, bookmark(id = 1, apiName = ""), WatchType.WATCHING)
+
+        val records = snapshot(adapter(local, FakeSyncManager()))
+
+        assertTrue(records.isEmpty())
+    }
+
+    // ---------------------------------------- localId collision safety (issue B)
+
+    @Test
+    fun `a cloud record is refused when its localId already holds different media`() {
+        val local = FakeLocalStore()
+        // A real, unrelated bookmark the user has.
+        local.put(4242, bookmark(id = 4242, url = "anime:99", name = "Something else"), WatchType.WATCHING)
+        val adapter = adapter(local, FakeSyncManager())
+
+        val result = runBlocking {
+            adapter.putBookmarkLocally(cloudRecord(url = "anime:21", name = "Intruder", localId = 4242))
+        }
+
+        assertTrue("a colliding write must be refused", result is CloudDreamSyncResult.Failure)
+        assertEquals("Something else", local.getBookmarkData(4242)!!.name)
+        assertEquals("anime:99", local.getBookmarkData(4242)!!.url)
+    }
+
+    @Test
+    fun `a cloud record is allowed when the localId holds the same media`() {
+        val local = FakeLocalStore()
+        local.put(4242, bookmark(id = 4242, url = "anime:21", name = "Stale name"), WatchType.WATCHING)
+        val adapter = adapter(local, FakeSyncManager())
+
+        val result = runBlocking {
+            adapter.putBookmarkLocally(cloudRecord(url = "anime:21", name = "Fresh name", localId = 4242))
+        }
+
+        assertTrue(result is CloudDreamSyncResult.Success)
+        assertEquals("Fresh name", local.getBookmarkData(4242)!!.name)
+    }
+
+    @Test
+    fun `a cloud record with no local row at its localId is written`() {
+        val local = FakeLocalStore()
+        val adapter = adapter(local, FakeSyncManager())
+
+        val result = runBlocking { adapter.putBookmarkLocally(cloudRecord(localId = 777)) }
+
+        assertTrue(result is CloudDreamSyncResult.Success)
+        assertEquals("anime:21", local.getBookmarkData(777)!!.url)
+    }
+
+    @Test
+    fun `a sync does not clobber an unrelated bookmark when a cloud id collides`() {
+        val local = FakeLocalStore()
+        local.put(4242, bookmark(id = 4242, url = "anime:99", name = "Mine", latestUpdatedTime = 1_000L), WatchType.WATCHING)
+        val manager = FakeSyncManager().apply {
+            listResult = CloudDreamSyncResult.Success(
+                listOf(cloudRecord(url = "anime:21", name = "Theirs", localId = 4242, updatedAt = 9_000L))
+            )
+        }
+
+        runBlocking { adapter(local, manager).syncBookmarksOnce() }
+
+        assertEquals("Mine", local.getBookmarkData(4242)!!.name)
+        assertEquals("anime:99", local.getBookmarkData(4242)!!.url)
+    }
+
+    // ------------------------------------ deletion retry safety (issue A)
+
+    @Test
+    fun `a failed cloud delete keeps the local bookmark so it can be retried`() {
+        val local = FakeLocalStore()
+        local.put(4242, bookmark(id = 4242), WatchType.WATCHING)
+        val manager = FakeSyncManager().apply {
+            deleteResult = CloudDreamSyncResult.Failure(CloudDreamSyncError.FIRESTORE_FAILURE)
+        }
+
+        val result = runBlocking { adapter(local, manager).deleteBookmarkLocally(4242) }
+
+        assertTrue(result is CloudDreamSyncResult.Failure)
+        assertEquals(
+            "local data must survive a failed cloud delete",
+            "Frieren: Beyond Journey's End",
+            local.getBookmarkData(4242)!!.name,
+        )
+        assertEquals(WatchType.WATCHING, local.getWatchState(4242))
+    }
+
+    @Test
+    fun `a skipped cloud delete keeps the local bookmark`() {
+        val local = FakeLocalStore()
+        local.put(4242, bookmark(id = 4242), WatchType.WATCHING)
+        val manager = FakeSyncManager().apply {
+            deleteResult = CloudDreamSyncResult.Skipped(CloudDreamSkipReason.SIGNED_OUT)
+        }
+
+        val result = runBlocking { adapter(local, manager).deleteBookmarkLocally(4242) }
+
+        assertEquals(CloudDreamSyncResult.Skipped(CloudDreamSkipReason.SIGNED_OUT), result)
+        assertTrue(local.data.containsKey(4242))
+        assertTrue(local.watchStates.containsKey(4242))
+    }
+
+    @Test
+    fun `a retried delete after a failure completes and removes both sides`() {
+        val local = FakeLocalStore()
+        local.put(4242, bookmark(id = 4242), WatchType.WATCHING)
+        val manager = FakeSyncManager()
+        val key = BookmarkMapper.keyFor(local.getBookmarkData(4242))!!
+        manager.bookmarks[key.documentId] = cloudRecord()
+        manager.deleteResult = CloudDreamSyncResult.Failure(CloudDreamSyncError.FIRESTORE_FAILURE)
+
+        // First attempt fails and keeps everything.
+        runBlocking { adapter(local, manager).deleteBookmarkLocally(4242) }
+        assertTrue(local.data.containsKey(4242))
+
+        // Second attempt, now reachable, completes.
+        manager.deleteResult = CloudDreamSyncResult.Success(Unit)
+        val second = runBlocking { adapter(local, manager).deleteBookmarkLocally(4242) }
+
+        assertTrue(second is CloudDreamSyncResult.Success)
+        assertTrue(local.data.isEmpty() && local.watchStates.isEmpty())
+        assertEquals(2, manager.calls.count { it.startsWith("cloud.delete") })
+    }
+
+    @Test
+    fun `the cloud document is deleted before the local row`() {
+        // One shared log, so the interleaving of the two fakes is actually observable.
+        val log = mutableListOf<String>()
+        val local = FakeLocalStore(log)
+        local.put(4242, bookmark(id = 4242), WatchType.WATCHING)
+        val manager = FakeSyncManager(log)
+
+        runBlocking { adapter(local, manager).deleteBookmarkLocally(4242) }
+
+        val cloudAt = log.indexOfFirst { it.startsWith("cloud.delete") }
+        val localAt = log.indexOfFirst { it.startsWith("local.delete") }
+        assertTrue("cloud delete must happen first, log=$log", cloudAt >= 0 && cloudAt < localAt)
     }
 }

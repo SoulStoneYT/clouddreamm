@@ -279,6 +279,9 @@ dependencies {
     // Testing
     testImplementation(libs.junit)
     testImplementation(libs.json)
+    // Test-only: gives the CloudDream sync tests a deterministic scheduler so the
+    // one-shot/concurrency assertions do not depend on real thread timing.
+    testImplementation(libs.kotlinx.coroutines.test)
     androidTestImplementation(libs.core)
     androidTestImplementation(libs.espresso.core)
     androidTestImplementation(libs.ext.junit)

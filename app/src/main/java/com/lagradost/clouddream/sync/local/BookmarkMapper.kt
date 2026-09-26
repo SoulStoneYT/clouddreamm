@@ -40,9 +40,12 @@ internal object BookmarkMapper {
      * Returns `null` (i.e. "do not sync this one") when the local state is not a
      * real bookmark:
      *  - no `BookmarkedData` (a watch-state-only row, which the library itself
-     *    skips when rendering), or
+     *    skips when rendering),
      *  - the watch type is [WatchType.NONE] (an unbookmark, which deletes the
-     *    metadata rather than recording a "none" status).
+     *    metadata rather than recording a "none" status), or
+     *  - the row is malformed, so no [CloudDreamMediaKey] can be formed. See
+     *    [keyFor]; this is what keeps a corrupt local record from throwing out of
+     *    a function whose contract is to return null.
      */
     fun toCloud(
         data: BookmarkedData?,
@@ -51,9 +54,9 @@ internal object BookmarkMapper {
     ): CloudDreamBookmarkRecord? {
         if (data == null) return null
         if (watchType == WatchType.NONE) return null
-        val type = data.type ?: return null
+        val key = keyFor(data) ?: return null
         return CloudDreamBookmarkRecord(
-            key = CloudDreamMediaKey.forTitle(data.apiName, type.name, data.url, data.year),
+            key = key,
             name = data.name,
             watchType = watchType.name,
             posterUrl = data.posterUrl,
@@ -67,14 +70,21 @@ internal object BookmarkMapper {
 
     /**
      * Derives the stable cloud key for a local bookmark, or `null` when the
-     * record is missing the `TvType` needed to form one (in which case it was
-     * never uploaded, so there is nothing on the cloud to delete).
+     * record cannot form one:
      *
-     * Used both for upload and for capturing the key *before* a local deletion is
-     * applied.
+     *  - no `BookmarkedData` at all,
+     *  - a blank `apiName`, which [CloudDreamMediaKey] rejects with `require` and
+     *    would therefore throw on, or
+     *  - a missing `TvType`, without which the key's `type` component is unknown.
+     *
+     * A `null` here always means the same thing: the row has never been uploaded,
+     * so there is nothing on the cloud to delete either. Used both for upload and
+     * for capturing the key *before* a local deletion is applied.
      */
     fun keyFor(data: BookmarkedData?): CloudDreamMediaKey? {
-        val type = data?.type ?: return null
+        if (data == null) return null
+        if (data.apiName.isBlank()) return null
+        val type = data.type ?: return null
         return CloudDreamMediaKey.forTitle(data.apiName, type.name, data.url, data.year)
     }
 
